@@ -129,26 +129,12 @@ func test() {
 	testCases := readTestCasesSimple()
 	go acceptConnections(l, clientAddr, currentTestCase, stopSignal)
 
-	//for {
-	//	select {
-	//	case _ = <-stopSignal:
-	//		fmt.Println("Received stop")
-	//		//l.Close()
-	//	case testCase := <-testCasesStream:
-	//		fmt.Println("Received test case!")
-	//		if testCase == nil {
-	//			break
-	//		} else {
-	//			currentTestCase <- testCase
-	//		}
-	//
-	//	}
-	//}
 	for _, testCase := range testCases {
 		fmt.Println("Received test case!")
 		currentTestCase <- &testCase
 		stdin := bytes.NewReader(input)
 		go runClientCommand(stdin, stopSignal)
+		<-stopSignal
 		<-stopSignal
 		fmt.Println("Received stop")
 		//l.Close()
@@ -175,19 +161,25 @@ func handleRequest(serverConn *net.TCPConn, clientAddr string, testCaseStream ch
 	serverConn.SetLinger(0)
 	clientConn.SetLinger(0)
 
+	go transferData(serverConn, clientConn, testCase, stopSignal)
+	go transferData(clientConn, serverConn, testCase, stopSignal)
+}
+
+func transferData(source *net.TCPConn, destination *net.TCPConn, testCase *TestCase, stopSignal chan bool) {
 	for {
 		buffer := make([]byte, testCase.SegmentSize)
-		receivedLength, err := serverConn.Read(buffer)
+		receivedLength, err := source.Read(buffer)
 		if err == io.EOF {
 			fmt.Println("Received EOF!")
 			stopSignal <- true
-			clientConn.Close()
+			destination.Close()
 			break
 		}
 		if err != nil {
 			fmt.Println("Error reading:", err.Error())
+			break
 		}
-		clientConn.Write(buffer[0:receivedLength])
+		destination.Write(buffer[0:receivedLength])
 		time.Sleep(time.Duration(testCase.DelayTimeInMilliseconds) * time.Millisecond)
 	}
 }
@@ -211,17 +203,16 @@ func readTestCases(testCasesStream chan *TestCase)  {
 }
 
 func readTestCasesSimple() []TestCase {
-	testCasesFile, _ := os.Open("testCases.json") // TODO: Err
-	decoder := json.NewDecoder(testCasesFile)
+	testCasesJson, err := ioutil.ReadFile("testCases.json")
+	if err != nil {
+		log.Fatal(err)
+	}
 	var testCases []TestCase
-	err := decoder.Decode(&testCases)
+	err = json.Unmarshal(testCasesJson, &testCases)
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Println("Decoded an array")
-	if decoder.More() {
-		log.Fatal(err)
-	}
 	return testCases
 }
 
