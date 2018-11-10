@@ -1,0 +1,4 @@
+[
+{"DelayTimeInMilliseconds": 200, "SegmentSize": 2, "DoReset": false, "ResetAfterNumOfSegments": 10},
+{"DelayTimeInMilliseconds": 1000, "SegmentSize": 5, "DoReset": false, "ResetAfterNumOfSegments": 10}
+]
