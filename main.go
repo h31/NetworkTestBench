@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -135,14 +136,13 @@ func test() {
 		stdin := bytes.NewReader(input)
 		go runClientCommand(stdin, stopSignal)
 		<-stopSignal
-		<-stopSignal
 		fmt.Println("Received stop")
 		//l.Close()
 	}
 }
 
 func handleRequest(serverConn *net.TCPConn, clientAddr string, testCaseStream chan *TestCase, stopSignal chan bool) {
-	testCase := <- testCaseStream
+	testCase := <-testCaseStream
 	fmt.Printf("Current test config is %+v\n", testCase)
 
 	rAddr, err := net.ResolveTCPAddr("tcp", clientAddr)
@@ -160,9 +160,15 @@ func handleRequest(serverConn *net.TCPConn, clientAddr string, testCaseStream ch
 	clientConn.SetNoDelay(true)
 	serverConn.SetLinger(0)
 	clientConn.SetLinger(0)
+	stopSignalLocal := make(chan bool, 2)
 
-	go transferData(serverConn, clientConn, testCase, stopSignal)
-	go transferData(clientConn, serverConn, testCase, stopSignal)
+	go transferData(serverConn, clientConn, testCase, stopSignalLocal)
+	go transferData(clientConn, serverConn, testCase, stopSignalLocal)
+
+	<-stopSignalLocal
+	stopSignal <- true
+	clientConn.Close()
+	serverConn.Close()
 }
 
 func transferData(source *net.TCPConn, destination *net.TCPConn, testCase *TestCase, stopSignal chan bool) {
@@ -174,8 +180,9 @@ func transferData(source *net.TCPConn, destination *net.TCPConn, testCase *TestC
 			stopSignal <- true
 			destination.Close()
 			break
-		}
-		if err != nil {
+		} else if strings.Contains(err.Error(), "use of closed network connection") {
+
+		} else if err != nil {
 			fmt.Println("Error reading:", err.Error())
 			break
 		}
@@ -184,7 +191,7 @@ func transferData(source *net.TCPConn, destination *net.TCPConn, testCase *TestC
 	}
 }
 
-func readTestCases(testCasesStream chan *TestCase)  {
+func readTestCases(testCasesStream chan *TestCase) {
 	testCases, _ := os.Open("testCases.json") // TODO: Err
 	decoder := json.NewDecoder(testCases)
 	skipToken(decoder)
