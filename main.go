@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -22,14 +23,20 @@ type TestCase struct {
 	SegmentSize             int
 	DoReset                 bool
 	ResetAfterNumOfSegments int
+	NumOfClients            int
 }
 
+var debugLog *log.Logger = log.New(os.Stderr, "DEBUG ", log.LstdFlags)
+var debugIsEnabled = flag.Bool("d", false, "debugIsEnabled")
+
 func main() {
-	if len(os.Args) < 3 {
+	flag.Parse()
+	if flag.NArg() < 3 {
 		fmt.Println("Syntax: [collect|test] server_host:port client_command...")
 		os.Exit(1)
 	}
-	action := os.Args[1]
+	setUpLogging()
+	action := flag.Arg(0)
 	switch action {
 	case "collect":
 		collect()
@@ -41,13 +48,25 @@ func main() {
 	}
 }
 
+func setUpLogging() {
+	logFile, err := os.Create("testbench.log")
+	if err != nil {
+		panic(err)
+	}
+	log.SetOutput(io.MultiWriter(os.Stderr, logFile))
+	if !*debugIsEnabled {
+		debugLog.SetOutput(logFile)
+	}
+}
+
 func runClientCommand(stdin io.Reader) {
-	cmd := exec.Command(os.Args[3], os.Args[4:]...)
+	cmd := exec.Command(flag.Arg(2), flag.Args()[3:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = stdin
+	debugLog.Println("Executing a client command...")
 	cmd.Run()
-	log.Println("Client command was finished")
+	debugLog.Println("Client command completed")
 }
 
 func collect() {
@@ -60,6 +79,7 @@ func collect() {
 		SegmentSize:             1460, // MSS for MTU = 1500
 		DoReset:                 false,
 		ResetAfterNumOfSegments: 0,
+		NumOfClients:            1,
 	}
 
 	l := startListening()
@@ -71,7 +91,7 @@ func collect() {
 		panic(err)
 	}
 	userInputBuffered := bufio.NewWriter(userInput)
-	stdin := io.TeeReader(os.Stdin, userInputBuffered)
+	stdin := io.TeeReader(os.Stdin, userInput)
 	stopSignal := make(chan bool)
 	currentTestCase := make(chan *TestCase)
 	go acceptTCPConnections(l, destAddr, currentTestCase, stopSignal)
@@ -79,7 +99,7 @@ func collect() {
 	currentTestCase <- &zeroTestCase
 
 	<-stopSignal
-	fmt.Println("Received stop")
+	debugLog.Println("Received stop")
 	err = userInputBuffered.Flush()
 	if err != nil {
 		panic(err)
@@ -94,10 +114,9 @@ func startListening() *net.TCPListener {
 	}
 	l, err := net.ListenTCP("tcp", addr)
 	if err != nil {
-		fmt.Println("Error listening:", err.Error())
-		os.Exit(1)
+		log.Fatalln("Error listening:", err.Error())
 	}
-	fmt.Println("Listening on ", LISTENING_ADDR)
+	debugLog.Println("Listening on", LISTENING_ADDR)
 	return l
 }
 
@@ -105,7 +124,7 @@ func acceptTCPConnections(l *net.TCPListener, destAddr *net.TCPAddr, currentTest
 	for {
 		conn, err := l.AcceptTCP()
 		if err != nil {
-			log.Fatalln("Error accepting: ", err)
+			debugLog.Fatalln("Error accepting: ", err)
 		}
 		go handleRequest(conn, destAddr, currentTestCase, stopSignal)
 	}
@@ -121,22 +140,30 @@ func test() {
 		log.Fatalf("%s, please run the 'collect' action first", err)
 	}
 	stopSignal := make(chan bool)
-	currentTestCase := make(chan *TestCase, 1)
+	currentTestCase := make(chan *TestCase)
 	testCases := readTestCasesSimple()
 	go acceptTCPConnections(l, destAddr, currentTestCase, stopSignal)
 
 	for _, testCase := range testCases {
-		fmt.Println("Received test case!")
-		currentTestCase <- &testCase
-		stdin := bytes.NewReader(input)
-		go runClientCommand(stdin)
-		<-stopSignal
-		fmt.Println("Received stop")
+		debugLog.Println("Received test case!")
+		log.Printf("Current test config is %+v\n", testCase)
+		if testCase.NumOfClients == 0 {
+			testCase.NumOfClients = 1 // TODO: Dirty
+		}
+		for i := 0; i < testCase.NumOfClients; i++ {
+			stdin := bytes.NewReader(input)
+			go runClientCommand(stdin)
+		}
+		for i := 0; i < testCase.NumOfClients; i++ {
+			currentTestCase <- &testCase
+			<-stopSignal
+			debugLog.Println("Received stop")
+		}
 	}
 }
 
 func getDestinationAddress() *net.TCPAddr {
-	destAddrText := os.Args[2]
+	destAddrText := flag.Arg(1)
 	destAddr, err := net.ResolveTCPAddr("tcp", destAddrText)
 	if err != nil {
 		panic(err)
@@ -146,11 +173,12 @@ func getDestinationAddress() *net.TCPAddr {
 
 func handleRequest(serverConn *net.TCPConn, destAddr *net.TCPAddr, currentTestCase chan *TestCase, stopSignal chan bool) {
 	testCase := <-currentTestCase
-	fmt.Printf("Current test config is %+v\n", testCase)
+	debugLog.Println("Connection handler was started")
 
 	clientConn, err := net.DialTCP("tcp", nil, destAddr)
 	if err != nil {
-		fmt.Println("Error dialing:", err.Error())
+		log.Println("Error dialing:", err.Error())
+		log.Fatalln("Are you sure your server is up and running?")
 	}
 
 	serverConn.SetNoDelay(true)
@@ -159,31 +187,39 @@ func handleRequest(serverConn *net.TCPConn, destAddr *net.TCPAddr, currentTestCa
 	clientConn.SetLinger(0)
 	stopSignalLocal := make(chan bool, 2)
 
-	go transferData(serverConn, clientConn, testCase, stopSignalLocal, "server to client")
-	go transferData(clientConn, serverConn, testCase, stopSignalLocal, "client to server")
+	go transferData(serverConn, clientConn, testCase, stopSignalLocal, "client to server")
+	go transferData(clientConn, serverConn, testCase, stopSignalLocal, "server to client")
 
 	<-stopSignalLocal
+	debugLog.Println("Received stop signal")
 	stopSignal <- true
 	//clientConn.Close()
 	//serverConn.Close()
 }
 
 func transferData(source *net.TCPConn, destination *net.TCPConn, testCase *TestCase, stopSignal chan bool, description string) {
+	transmissionCount := 0
 	for {
+		if testCase.DoReset && transmissionCount >= testCase.ResetAfterNumOfSegments {
+			stopSignal <- true
+			source.Close()
+			destination.Close()
+		}
+		transmissionCount++
 		buffer := make([]byte, testCase.SegmentSize)
 		receivedLength, err := source.Read(buffer)
 		if err == io.EOF {
-			fmt.Println("Received EOF in", description)
-			//stopSignal <- true
-			//source.Close()
+			debugLog.Println("Received EOF in", description)
+			stopSignal <- true
+			destination.Close()
 			break
 		} else if err != nil && strings.HasSuffix(err.Error(), "use of closed network connection") {
-			fmt.Println("Use of closed network connection in", description)
-			//stopSignal <- true
-			//source.Close()
+			debugLog.Println("Use of closed network connection in", description)
+			stopSignal <- true
+			destination.Close()
 			break
 		} else if err != nil {
-			fmt.Println("Error reading:", err.Error())
+			log.Println("Error reading:", err.Error())
 			break
 		}
 		destination.Write(buffer[0:receivedLength])
@@ -204,7 +240,7 @@ func readTestCases() []TestCase {
 		log.Fatal(err)
 	}
 
-	fmt.Println("Decoded a value")
+	debugLog.Println("Decoded a value")
 	return testCase
 }
 
@@ -218,7 +254,7 @@ func readTestCasesSimple() []TestCase {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("Decoded an array")
+	debugLog.Println("Decoded an array")
 	return testCases
 }
 

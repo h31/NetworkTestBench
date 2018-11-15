@@ -1,4 +1,16 @@
 [
-{"DelayTimeInMilliseconds": 200, "SegmentSize": 2, "DoReset": false, "ResetAfterNumOfSegments": 10},
-{"DelayTimeInMilliseconds": 1000, "SegmentSize": 5, "DoReset": false, "ResetAfterNumOfSegments": 10}
+  {
+    "DelayTimeInMilliseconds": 200,
+    "SegmentSize": 2,
+    "DoReset": true,
+    "ResetAfterNumOfSegments": 1,
+    "NumOfClients": 10
+  },
+  {
+    "DelayTimeInMilliseconds": 1000,
+    "SegmentSize": 5,
+    "DoReset": false,
+    "ResetAfterNumOfSegments": 10,
+    "NumOfClients": 1
+  }
 ]
