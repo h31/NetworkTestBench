@@ -1,9 +1,44 @@
 [
   {
+    "DelayTimeInMilliseconds": 0,
+    "SegmentSize": 1460, # MSS for MTU = 1500
+    "DoReset": false,
+    "ResetAfterNumOfSegments": 0,
+    "NumOfClients": 1
+  },
+  {
+    "DelayTimeInMilliseconds": 0,
+    "SegmentSize": 1460,
+    "DoReset": false,
+    "ResetAfterNumOfSegments": 0,
+    "NumOfClients": 10
+  },
+  {
+    "DelayTimeInMilliseconds": 200,
+    "SegmentSize": 2,
+    "DoReset": false,
+    "ResetAfterNumOfSegments": 0,
+    "NumOfClients": 1
+  },
+  {
+    "DelayTimeInMilliseconds": 200,
+    "SegmentSize": 2,
+    "DoReset": false,
+    "ResetAfterNumOfSegments": 0,
+    "NumOfClients": 10
+  },
+  {
     "DelayTimeInMilliseconds": 200,
     "SegmentSize": 2,
     "DoReset": true,
     "ResetAfterNumOfSegments": 1,
+    "NumOfClients": 10
+  },
+  {
+    "DelayTimeInMilliseconds": 200,
+    "SegmentSize": 2,
+    "DoReset": true,
+    "ResetAfterNumOfSegments": 2,
     "NumOfClients": 10
   },
   {
