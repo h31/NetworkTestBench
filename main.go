@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const LISTENING_ADDR string = "localhost:3456"
+const DEFAULT_LISTENING_ADDR string = "localhost:3456"
 
 type TestCase struct {
 	DelayTimeInMilliseconds int  `yaml:"DelayTimeInMilliseconds"`
@@ -30,6 +30,7 @@ type Settings struct {
 	ListeningAddr    string   `yaml:"ListeningAddr"`
 	ServerAddr       string   `yaml:"ServerAddr"`
 	ClientCommand    string   `yaml:"ClientCommand"`
+	WaitForClients   bool     `yaml:"WaitForClients"`
 	ClientExecutable string   `yaml:"ClientExecutable"`
 	ClientArgs       []string `yaml:"ClientArgs"`
 }
@@ -40,8 +41,9 @@ var debugIsEnabled = flag.Bool("d", false, "debugIsEnabled")
 var settings = Settings{}
 
 func main() {
-	action := parseSettings()
+	flag.Parse()
 	setUpLogging()
+	action := parseSettings()
 	switch action {
 	case "collect":
 		collect()
@@ -54,8 +56,6 @@ func main() {
 }
 
 func parseSettings() string {
-	flag.Parse()
-
 	switch {
 	case flag.NArg() < 1:
 		fmt.Println("Syntax: ./NetworkTestBench [collect|test]")
@@ -77,7 +77,7 @@ func parseSettings() string {
 		settings.ClientArgs = fields[1:]
 	default:
 		debugLog.Printf("NArg = %d, reading settings from command line arguments", flag.NArg())
-		settings.ListeningAddr = "localhost:3456"
+		settings.ListeningAddr = DEFAULT_LISTENING_ADDR
 		settings.ServerAddr = flag.Arg(1)
 		settings.ClientExecutable = flag.Arg(2)
 		settings.ClientArgs = flag.Args()[3:]
@@ -97,7 +97,7 @@ func setUpLogging() {
 	}
 }
 
-func runClientCommand(stdin io.Reader) {
+func runClientCommand(stdin io.Reader, stopSignal chan bool) {
 	cmd := exec.Command(settings.ClientExecutable, settings.ClientArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -105,6 +105,7 @@ func runClientCommand(stdin io.Reader) {
 	debugLog.Println("Executing a client command...")
 	cmd.Run()
 	debugLog.Println("Client command completed")
+	stopSignal <- true
 }
 
 func collect() {
@@ -130,14 +131,14 @@ func collect() {
 	}
 	userInputBuffered := bufio.NewWriter(userInput)
 	stdin := io.TeeReader(os.Stdin, userInput)
-	stopSignal := make(chan bool)
+	redirectorStopSignal := make(chan bool)
+	executionStopSignal := make(chan bool)
 	currentTestCase := make(chan *TestCase)
-	go acceptTCPConnections(l, destAddr, currentTestCase, stopSignal)
-	go runClientCommand(stdin)
+	go acceptTCPConnections(l, destAddr, currentTestCase, redirectorStopSignal)
+	go runClientCommand(stdin, executionStopSignal)
 	currentTestCase <- &zeroTestCase
 
-	<-stopSignal
-	debugLog.Println("Received stop")
+	waitForEvent(redirectorStopSignal, executionStopSignal)
 	err = userInputBuffered.Flush()
 	if err != nil {
 		panic(err)
@@ -145,8 +146,20 @@ func collect() {
 	l.Close()
 }
 
+func waitForEvent(redirectorStopSignal chan bool, executionStopSignal chan bool) {
+	if settings.WaitForClients {
+		go devNullChannelReceiver(redirectorStopSignal, "redirector")
+		<-executionStopSignal
+		debugLog.Println("Received stop signal from the executor")
+	} else {
+		go devNullChannelReceiver(executionStopSignal, "executor")
+		<-redirectorStopSignal
+		debugLog.Println("Received stop signal from the redirector")
+	}
+}
+
 func startListening() *net.TCPListener {
-	addr, err := net.ResolveTCPAddr("tcp", LISTENING_ADDR)
+	addr, err := net.ResolveTCPAddr("tcp", settings.ListeningAddr)
 	if err != nil {
 		panic(err)
 	}
@@ -154,7 +167,7 @@ func startListening() *net.TCPListener {
 	if err != nil {
 		log.Fatalln("Error listening:", err.Error())
 	}
-	debugLog.Println("Listening on", LISTENING_ADDR)
+	debugLog.Println("Listening on", settings.ListeningAddr)
 	return l
 }
 
@@ -177,26 +190,32 @@ func test() {
 	if err != nil {
 		log.Fatalf("%s, please run the 'collect' action first", err)
 	}
-	stopSignal := make(chan bool)
+	redirectorStopSignal := make(chan bool)
 	currentTestCase := make(chan *TestCase)
 	testCases := readTestCasesSimple()
-	go acceptTCPConnections(l, destAddr, currentTestCase, stopSignal)
+	go acceptTCPConnections(l, destAddr, currentTestCase, redirectorStopSignal)
 
 	for _, testCase := range testCases {
-		debugLog.Println("Received test case!")
+		debugLog.Println("Received a test case!")
 		log.Printf("Current test config is %+v\n", testCase)
 		if testCase.NumOfClients == 0 {
 			testCase.NumOfClients = 1 // TODO: Dirty
 		}
+		executionStopSignal := make(chan bool)
 		for i := 0; i < testCase.NumOfClients; i++ {
 			stdin := bytes.NewReader(input)
-			go runClientCommand(stdin)
+			go runClientCommand(stdin, executionStopSignal)
 		}
 		for i := 0; i < testCase.NumOfClients; i++ {
 			currentTestCase <- &testCase
-			<-stopSignal
-			debugLog.Println("Received stop")
+			waitForEvent(redirectorStopSignal, executionStopSignal)
 		}
+	}
+}
+
+func devNullChannelReceiver(channel chan bool, source string) {
+	for _ = range channel {
+		debugLog.Printf("Received a message from the %s, ignoring it", source)
 	}
 }
 
@@ -229,15 +248,16 @@ func handleRequest(serverConn *net.TCPConn, destAddr *net.TCPAddr, currentTestCa
 	go transferData(clientConn, serverConn, testCase, stopSignalLocal, "server to client")
 
 	<-stopSignalLocal
-	debugLog.Println("Received stop signal")
+	debugLog.Println("Received stop signal from the handler")
 	stopSignal <- true
-	//clientConn.Close()
-	//serverConn.Close()
 }
 
 func transferData(source *net.TCPConn, destination *net.TCPConn, testCase *TestCase, stopSignal chan bool, description string) {
 	transmissionCount := 0
 	for {
+		if testCase.DelayTimeInMilliseconds > 0 {
+			time.Sleep(time.Duration(testCase.DelayTimeInMilliseconds) * time.Millisecond)
+		}
 		if testCase.DoReset && transmissionCount >= testCase.ResetAfterNumOfSegments {
 			stopSignal <- true
 			source.Close()
@@ -267,9 +287,6 @@ func transferData(source *net.TCPConn, destination *net.TCPConn, testCase *TestC
 			source.Close()
 			destination.Close()
 		}
-		if testCase.DelayTimeInMilliseconds > 0 {
-			time.Sleep(time.Duration(testCase.DelayTimeInMilliseconds) * time.Millisecond)
-		}
 	}
 }
 
@@ -279,7 +296,7 @@ func readTestCasesSimple() []TestCase {
 		log.Fatal(err)
 	}
 	var testCases []TestCase
-	err = yaml.UnmarshalStrict(testCasesYaml, &testCases)
+	err = yaml.Unmarshal(testCasesYaml, &testCases)
 	if err != nil {
 		log.Fatal(err)
 	}

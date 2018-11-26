@@ -1,5 +1,6 @@
 {
   "ListeningAddr": "localhost:3456", # abc
   "ServerAddr": "localhost:1234",
-  "ClientCommand": "telnet localhost 3456"
+  "ClientCommand": "telnet localhost 3456",
+  "WaitForClients": false
 }
