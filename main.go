@@ -204,9 +204,9 @@ func test() {
 	testCases := readTestCasesSimple()
 	go acceptTCPConnections(l, destAddr, currentTestCase, redirectorStopSignal)
 
-	for _, testCase := range testCases {
-		debugLog.Println("Received a test case!")
-		log.Printf("Current test config is %+v\n", testCase)
+	for testCaseNumber, testCase := range testCases {
+		debugLog.Printf("Received a test case number %d", testCaseNumber)
+		log.Printf("Current test config is number %d with %+v\n", testCaseNumber, testCase)
 		if testCase.NumOfClients == 0 {
 			testCase.NumOfClients = 1 // TODO: Dirty
 		}
