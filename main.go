@@ -3,9 +3,9 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"flag"
 	"fmt"
+	"gopkg.in/yaml.v2"
 	"io"
 	"io/ioutil"
 	"log"
@@ -19,24 +19,29 @@ import (
 const LISTENING_ADDR string = "localhost:3456"
 
 type TestCase struct {
-	DelayTimeInMilliseconds int
-	SegmentSize             int
-	DoReset                 bool
-	ResetAfterNumOfSegments int
-	NumOfClients            int
+	DelayTimeInMilliseconds int  `yaml:"DelayTimeInMilliseconds"`
+	SegmentSize             int  `yaml:"SegmentSize"`
+	DoReset                 bool `yaml:"DoReset"`
+	ResetAfterNumOfSegments int  `yaml:"ResetAfterNumOfSegments"`
+	NumOfClients            int  `yaml:"NumOfClients"`
+}
+
+type Settings struct {
+	ListeningAddr    string   `yaml:"ListeningAddr"`
+	ServerAddr       string   `yaml:"ServerAddr"`
+	ClientCommand    string   `yaml:"ClientCommand"`
+	ClientExecutable string   `yaml:"ClientExecutable"`
+	ClientArgs       []string `yaml:"ClientArgs"`
 }
 
 var debugLog *log.Logger = log.New(os.Stderr, "DEBUG ", log.LstdFlags)
 var debugIsEnabled = flag.Bool("d", false, "debugIsEnabled")
 
+var settings = Settings{}
+
 func main() {
-	flag.Parse()
-	if flag.NArg() < 3 {
-		fmt.Println("Syntax: [collect|test] server_host:port client_command...")
-		os.Exit(1)
-	}
+	action := parseSettings()
 	setUpLogging()
-	action := flag.Arg(0)
 	switch action {
 	case "collect":
 		collect()
@@ -46,6 +51,39 @@ func main() {
 		fmt.Println("Unknown action:", action)
 		os.Exit(1)
 	}
+}
+
+func parseSettings() string {
+	flag.Parse()
+
+	switch {
+	case flag.NArg() < 1:
+		fmt.Println("Syntax: ./NetworkTestBench [collect|test]")
+		os.Exit(1)
+	case flag.NArg() == 1:
+		debugLog.Println("Reading settings from settings.yaml")
+		settingsFileContent, err := ioutil.ReadFile("settings.yaml")
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = yaml.UnmarshalStrict(settingsFileContent, &settings)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		fields := strings.Fields(settings.ClientCommand)
+		resolvedPath, _ := exec.LookPath(fields[0])
+		settings.ClientExecutable = resolvedPath
+		settings.ClientArgs = fields[1:]
+	default:
+		debugLog.Printf("NArg = %d, reading settings from command line arguments", flag.NArg())
+		settings.ListeningAddr = "localhost:3456"
+		settings.ServerAddr = flag.Arg(1)
+		settings.ClientExecutable = flag.Arg(2)
+		settings.ClientArgs = flag.Args()[3:]
+	}
+
+	return flag.Arg(0)
 }
 
 func setUpLogging() {
@@ -60,7 +98,7 @@ func setUpLogging() {
 }
 
 func runClientCommand(stdin io.Reader) {
-	cmd := exec.Command(flag.Arg(2), flag.Args()[3:]...)
+	cmd := exec.Command(settings.ClientExecutable, settings.ClientArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = stdin
@@ -163,7 +201,7 @@ func test() {
 }
 
 func getDestinationAddress() *net.TCPAddr {
-	destAddrText := flag.Arg(1)
+	destAddrText := settings.ServerAddr
 	destAddr, err := net.ResolveTCPAddr("tcp", destAddrText)
 	if err != nil {
 		panic(err)
@@ -222,43 +260,29 @@ func transferData(source *net.TCPConn, destination *net.TCPConn, testCase *TestC
 			log.Println("Error reading:", err.Error())
 			break
 		}
-		destination.Write(buffer[0:receivedLength])
+		_, err = destination.Write(buffer[0:receivedLength])
+		if err != nil {
+			log.Println("Error writing:", err.Error())
+			stopSignal <- true
+			source.Close()
+			destination.Close()
+		}
 		if testCase.DelayTimeInMilliseconds > 0 {
 			time.Sleep(time.Duration(testCase.DelayTimeInMilliseconds) * time.Millisecond)
 		}
 	}
 }
 
-func readTestCases() []TestCase {
-	testCases, _ := os.Open("testCases.json") // TODO: Err
-	decoder := json.NewDecoder(testCases)
-
-	var testCase []TestCase
-	// decode an array value (Message)
-	err := decoder.Decode(testCase)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	debugLog.Println("Decoded a value")
-	return testCase
-}
-
 func readTestCasesSimple() []TestCase {
-	testCasesJson, err := ioutil.ReadFile("testCases.json")
+	testCasesYaml, err := ioutil.ReadFile("testCases.yaml")
 	if err != nil {
 		log.Fatal(err)
 	}
 	var testCases []TestCase
-	err = json.Unmarshal(testCasesJson, &testCases)
+	err = yaml.UnmarshalStrict(testCasesYaml, &testCases)
 	if err != nil {
 		log.Fatal(err)
 	}
 	debugLog.Println("Decoded an array")
 	return testCases
-}
-
-func prettyPrint(i interface{}) string {
-	s, _ := json.MarshalIndent(i, "", "\t")
-	return string(s)
 }
