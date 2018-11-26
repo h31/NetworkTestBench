@@ -1,6 +1,6 @@
 {
-  "ListeningAddr": "localhost:3456", # abc
-  "ServerAddr": "localhost:1234",
-  "ClientCommand": "telnet localhost 3456",
+  "ListeningAddr": "localhost:3456",
+  "ServerAddr": "localhost:5001", # Замените 5001 на порт вашего сервера
+  "ClientCommand": "telnet localhost 3456", # Замените на команду, с помощью которой запускается ваш клиент
   "WaitForClients": false
 }
