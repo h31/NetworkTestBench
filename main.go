@@ -37,11 +37,12 @@ type Settings struct {
 
 var debugLog *log.Logger = log.New(os.Stderr, "DEBUG ", log.LstdFlags)
 var debugIsEnabled = flag.Bool("d", false, "debugIsEnabled")
+var testIndexOnly = flag.Int("t", -1, "only run test with a specified index")
 
 var settings = Settings{}
 
 func main() {
-	flag.Parse()
+	prepareFlags()
 	setUpLogging()
 	action := parseSettings()
 	switch action {
@@ -53,6 +54,14 @@ func main() {
 		fmt.Println("Unknown action:", action)
 		os.Exit(1)
 	}
+}
+
+func prepareFlags() {
+	flag.Usage = func() {
+		_, _ = fmt.Fprintf(flag.CommandLine.Output(), "Syntax: %s [-d] [-t index] [collect|test]\n", os.Args[0])
+		flag.PrintDefaults()
+	}
+	flag.Parse()
 }
 
 func parseSettings() string {
@@ -301,5 +310,8 @@ func readTestCasesSimple() []TestCase {
 		log.Fatal(err)
 	}
 	debugLog.Println("Decoded an array")
+	if *testIndexOnly >= 0 {
+		testCases = testCases[*testIndexOnly : *testIndexOnly+1]
+	}
 	return testCases
 }
