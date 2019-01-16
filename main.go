@@ -24,9 +24,11 @@ type TestCase struct {
 	DoReset                 bool `yaml:"DoReset"`
 	ResetAfterNumOfSegments int  `yaml:"ResetAfterNumOfSegments"`
 	NumOfClients            int  `yaml:"NumOfClients"`
+	ReorderingEnabled       bool `yaml:"ReorderingEnabled"`
 }
 
 type Settings struct {
+	Mode             string   `yaml:"Mode"`
 	ListeningAddr    string   `yaml:"ListeningAddr"`
 	ServerAddr       string   `yaml:"ServerAddr"`
 	ClientCommand    string   `yaml:"ClientCommand"`
@@ -67,23 +69,14 @@ func prepareFlags() {
 func parseSettings() string {
 	switch {
 	case flag.NArg() < 1:
-		fmt.Println("Syntax: ./NetworkTestBench [collect|test]")
+		fmt.Println("Syntax: ./NetworkTestBench {collect|test} [settings.yaml]")
 		os.Exit(1)
 	case flag.NArg() == 1:
 		debugLog.Println("Reading settings from settings.yaml")
-		settingsFileContent, err := ioutil.ReadFile("settings.yaml")
-		if err != nil {
-			log.Fatal(err)
-		}
-		err = yaml.UnmarshalStrict(settingsFileContent, &settings)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		fields := strings.Fields(settings.ClientCommand)
-		resolvedPath, _ := exec.LookPath(fields[0])
-		settings.ClientExecutable = resolvedPath
-		settings.ClientArgs = fields[1:]
+		readSettingsFromFile("settings.yaml")
+	case flag.NArg() == 2:
+		debugLog.Printf("Reading settings from %s", flag.Arg(1))
+		readSettingsFromFile(flag.Arg(1))
 	default:
 		debugLog.Printf("NArg = %d, reading settings from command line arguments", flag.NArg())
 		settings.ListeningAddr = DEFAULT_LISTENING_ADDR
@@ -93,6 +86,21 @@ func parseSettings() string {
 	}
 
 	return flag.Arg(0)
+}
+
+func readSettingsFromFile(fileName string) {
+	settingsFileContent, err := ioutil.ReadFile(fileName)
+	if err != nil {
+		log.Fatal(err)
+	}
+	err = yaml.UnmarshalStrict(settingsFileContent, &settings)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fields := strings.Fields(settings.ClientCommand)
+	resolvedPath, _ := exec.LookPath(fields[0])
+	settings.ClientExecutable = resolvedPath
+	settings.ClientArgs = fields[1:]
 }
 
 func setUpLogging() {
@@ -120,8 +128,6 @@ func runClientCommand(stdin io.Reader, stopSignal chan bool) {
 func collect() {
 	//sigs := make(chan os.Signal, 1)
 
-	destAddr := getDestinationAddress()
-
 	zeroTestCase := TestCase{
 		DelayTimeInMilliseconds: 0,
 		SegmentSize:             1460, // MSS for MTU = 1500
@@ -129,9 +135,6 @@ func collect() {
 		ResetAfterNumOfSegments: 0,
 		NumOfClients:            1,
 	}
-
-	l := startListening()
-	defer l.Close()
 
 	//var userInput bytes.Buffer
 	userInput, err := os.Create("userInput.txt")
@@ -143,7 +146,7 @@ func collect() {
 	redirectorStopSignal := make(chan bool)
 	executionStopSignal := make(chan bool)
 	currentTestCase := make(chan *TestCase)
-	go acceptTCPConnections(l, destAddr, currentTestCase, redirectorStopSignal)
+	go acceptConnections(currentTestCase, redirectorStopSignal)
 	go runClientCommand(stdin, executionStopSignal)
 	currentTestCase <- &zeroTestCase
 
@@ -152,7 +155,6 @@ func collect() {
 	if err != nil {
 		panic(err)
 	}
-	l.Close()
 }
 
 func waitForEvent(redirectorStopSignal chan bool, executionStopSignal chan bool) {
@@ -180,7 +182,22 @@ func startListening() *net.TCPListener {
 	return l
 }
 
-func acceptTCPConnections(l *net.TCPListener, destAddr *net.TCPAddr, currentTestCase chan *TestCase, stopSignal chan bool) {
+func acceptConnections(currentTestCase chan *TestCase, stopSignal chan bool) {
+	switch settings.Mode {
+	case "TCP":
+		acceptTCPConnections(currentTestCase, stopSignal)
+	case "UDP":
+		acceptUDPConnections(currentTestCase, stopSignal)
+	default:
+		log.Fatalln("Unknown mode:", settings.Mode)
+	}
+}
+
+func acceptTCPConnections(currentTestCase chan *TestCase, stopSignal chan bool) {
+	l := startListening()
+	destAddr := getDestinationAddress()
+	defer l.Close()
+
 	for {
 		conn, err := l.AcceptTCP()
 		if err != nil {
@@ -191,10 +208,6 @@ func acceptTCPConnections(l *net.TCPListener, destAddr *net.TCPAddr, currentTest
 }
 
 func test() {
-	destAddr := getDestinationAddress()
-
-	l := startListening()
-	defer l.Close()
 	input, err := ioutil.ReadFile("userInput.txt")
 	if err != nil {
 		log.Fatalf("%s, please run the 'collect' action first", err)
@@ -202,7 +215,8 @@ func test() {
 	redirectorStopSignal := make(chan bool)
 	currentTestCase := make(chan *TestCase)
 	testCases := readTestCasesSimple()
-	go acceptTCPConnections(l, destAddr, currentTestCase, redirectorStopSignal)
+	go acceptConnections(currentTestCase, redirectorStopSignal)
+	time.Sleep(1 * time.Second) // Delay to settle things down
 
 	for testCaseNumber, testCase := range testCases {
 		debugLog.Printf("Received a test case number %d", testCaseNumber)
